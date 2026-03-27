@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "memhuntr"
+version = "0.1.0"
+description = "Memory forensics malware classifier using Volatility 3 and XGBoost"
+requires-python = ">=3.10"
+dependencies = [
+    "pandas>=2.0",
+    "numpy>=1.24",
+    "scikit-learn>=1.3",
+    "xgboost>=1.7",
+    "joblib>=1.3",
+    "typer[all]>=0.9",
+    "rich>=13.0",
+]
+
+[project.scripts]
+memhuntr = "src.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["src*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

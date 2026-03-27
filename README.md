@@ -32,6 +32,7 @@ memhuntr/
 │   └── processed/        # Engineered features, scalers, and trained models
 │       ├── temporal/     # Temporal split artifacts (default)
 │       └── random/       # Random split artifacts
+├── pyproject.toml        # Package config and CLI entry point
 └── requirements.txt
 ```
 
@@ -51,8 +52,10 @@ python -m venv .venv
 source .venv/bin/activate   # Linux/macOS
 # .venv\Scripts\activate    # Windows
 
-pip install -r requirements.txt
+pip install -e .
 ```
+
+This installs memhuntr as a CLI command and all dependencies. The `-e` (editable) flag means code changes take effect immediately without reinstalling.
 
 ## Usage
 
@@ -61,7 +64,7 @@ pip install -r requirements.txt
 Verify that Volatility 3 and model files are available:
 
 ```bash
-python -m src.cli check
+memhuntr check
 ```
 
 ### Detect OS info
@@ -69,19 +72,19 @@ python -m src.cli check
 Get OS information for a memory dump (Volatility 3 auto-detects the profile):
 
 ```bash
-python -m src.cli info /path/to/dump.raw
+memhuntr info /path/to/dump.raw
 ```
 
 ### Scan a memory dump
 
 ```bash
-python -m src.cli scan /path/to/dump.raw
+memhuntr scan /path/to/dump.raw
 ```
 
 With JSON output and feature explanations:
 
 ```bash
-python -m src.cli scan /path/to/dump.raw --output json --explain
+memhuntr scan /path/to/dump.raw --output json --explain
 ```
 
 ### CLI Options
