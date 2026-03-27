@@ -58,13 +58,11 @@ class TestScanCommand:
         dump = tmp_path / "test.raw"
         dump.write_bytes(b"\x00" * 100)
 
-        mock_vol.return_value = "vol.py"
+        mock_vol.return_value = "vol"
         mock_load.return_value = _make_mock_pipeline("Malware")
         mock_extract.return_value = _make_features_df()
 
-        result = runner.invoke(app, [
-            "scan", str(dump), "--profile", "Win7SP1x64"
-        ])
+        result = runner.invoke(app, ["scan", str(dump)])
         assert result.exit_code == 0
         assert "MALWARE" in result.output
 
@@ -75,13 +73,11 @@ class TestScanCommand:
         dump = tmp_path / "test.raw"
         dump.write_bytes(b"\x00" * 100)
 
-        mock_vol.return_value = "vol.py"
+        mock_vol.return_value = "vol"
         mock_load.return_value = _make_mock_pipeline("Benign")
         mock_extract.return_value = _make_features_df()
 
-        result = runner.invoke(app, [
-            "scan", str(dump), "--profile", "Win7SP1x64"
-        ])
+        result = runner.invoke(app, ["scan", str(dump)])
         assert result.exit_code == 0
         assert "BENIGN" in result.output
 
@@ -92,12 +88,12 @@ class TestScanCommand:
         dump = tmp_path / "test.raw"
         dump.write_bytes(b"\x00" * 100)
 
-        mock_vol.return_value = "vol.py"
+        mock_vol.return_value = "vol"
         mock_load.return_value = _make_mock_pipeline("Malware")
         mock_extract.return_value = _make_features_df()
 
         result = runner.invoke(app, [
-            "scan", str(dump), "--profile", "Win7SP1x64", "--output", "json"
+            "scan", str(dump), "--output", "json"
         ])
         assert result.exit_code == 0
         assert '"label"' in result.output
@@ -108,11 +104,9 @@ class TestScanCommand:
         dump = tmp_path / "test.raw"
         dump.write_bytes(b"\x00" * 100)
 
-        mock_vol.side_effect = RuntimeError("Volatility 2 not found")
+        mock_vol.side_effect = RuntimeError("Volatility 3 not found")
 
-        result = runner.invoke(app, [
-            "scan", str(dump), "--profile", "Win7SP1x64"
-        ])
+        result = runner.invoke(app, ["scan", str(dump)])
         assert result.exit_code == 1
 
     @patch("src.cli.load_pipeline")
@@ -121,12 +115,10 @@ class TestScanCommand:
         dump = tmp_path / "test.raw"
         dump.write_bytes(b"\x00" * 100)
 
-        mock_vol.return_value = "vol.py"
+        mock_vol.return_value = "vol"
         mock_load.side_effect = FileNotFoundError("Model file not found")
 
-        result = runner.invoke(app, [
-            "scan", str(dump), "--profile", "Win7SP1x64"
-        ])
+        result = runner.invoke(app, ["scan", str(dump)])
         assert result.exit_code == 1
 
     @patch("src.cli.extract_features")
@@ -136,12 +128,12 @@ class TestScanCommand:
         dump = tmp_path / "test.raw"
         dump.write_bytes(b"\x00" * 100)
 
-        mock_vol.return_value = "vol.py"
+        mock_vol.return_value = "vol"
         mock_load.return_value = _make_mock_pipeline("Malware")
         mock_extract.return_value = _make_features_df()
 
         result = runner.invoke(app, [
-            "scan", str(dump), "--profile", "Win7SP1x64", "--explain"
+            "scan", str(dump), "--explain"
         ])
         assert result.exit_code == 0
         assert "Top Features" in result.output
@@ -155,12 +147,12 @@ class TestCheckCommand:
     @patch("src.cli.load_pipeline")
     @patch("src.cli.check_volatility")
     def test_check_all_ok(self, mock_vol, mock_load):
-        mock_vol.return_value = "vol.py"
+        mock_vol.return_value = "vol"
         mock_load.return_value = {}
 
         result = runner.invoke(app, ["check"])
         assert result.exit_code == 0
-        assert "Volatility 2" in result.output
+        assert "Volatility 3" in result.output
         assert "Model files" in result.output
 
     @patch("src.cli.load_pipeline")
@@ -176,7 +168,7 @@ class TestCheckCommand:
     @patch("src.cli.load_pipeline")
     @patch("src.cli.check_volatility")
     def test_check_model_missing(self, mock_vol, mock_load):
-        mock_vol.return_value = "vol.py"
+        mock_vol.return_value = "vol"
         mock_load.side_effect = FileNotFoundError("missing")
 
         result = runner.invoke(app, ["check"])

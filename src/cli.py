@@ -1,6 +1,7 @@
 """memhuntr CLI — Memory forensics malware classifier."""
 
 import json
+import subprocess
 import sys
 from pathlib import Path
 from typing import Optional
@@ -16,7 +17,7 @@ from .inference import explain_prediction, load_pipeline, predict
 app = typer.Typer(
     name="memhuntr",
     help="Classify memory dumps as Benign or Malware (Ransomware/Spyware/Trojan) "
-         "using Volatility 2 features and a two-stage XGBoost pipeline.",
+         "using Volatility 3 features and a two-stage XGBoost pipeline.",
     no_args_is_help=True,
 )
 console = Console()
@@ -28,17 +29,13 @@ def scan(
         ..., help="Path to the memory dump file (.raw, .vmem, etc.)",
         exists=True, readable=True,
     ),
-    profile: str = typer.Option(
-        ..., "--profile", "-p",
-        help="Volatility 2 profile (e.g. Win7SP1x64). Run 'memhuntr imageinfo' to detect.",
-    ),
     model_dir: Optional[Path] = typer.Option(
         None, "--model-dir", "-m",
         help="Override model directory (default: bundled temporal models).",
     ),
     vol_path: str = typer.Option(
-        "vol.py", "--vol-path",
-        help="Path to Volatility 2 executable.",
+        "vol", "--vol-path",
+        help="Path to Volatility 3 executable.",
     ),
     output_format: str = typer.Option(
         "table", "--output", "-o",
@@ -69,8 +66,7 @@ def scan(
         raise typer.Exit(1)
 
     # Extract features
-    console.print(f"\n[bold]Scanning:[/bold] {dump_path}")
-    console.print(f"[bold]Profile:[/bold] {profile}\n")
+    console.print(f"\n[bold]Scanning:[/bold] {dump_path}\n")
 
     def on_progress(plugin, status):
         if status == "running":
@@ -82,7 +78,7 @@ def scan(
 
     try:
         features_df = extract_features(
-            str(dump_path), profile, vol_cmd, timeout, on_progress
+            str(dump_path), vol_cmd, timeout, on_progress
         )
     except Exception as e:
         console.print(f"\n[red]Feature extraction failed: {e}[/red]")
@@ -107,17 +103,17 @@ def scan(
 
 
 @app.command()
-def imageinfo(
+def info(
     dump_path: Path = typer.Argument(
         ..., help="Path to the memory dump file.",
         exists=True, readable=True,
     ),
     vol_path: str = typer.Option(
-        "vol.py", "--vol-path",
-        help="Path to Volatility 2 executable.",
+        "vol", "--vol-path",
+        help="Path to Volatility 3 executable.",
     ),
 ):
-    """Detect the OS profile for a memory dump."""
+    """Detect OS information for a memory dump (replaces Vol2 imageinfo)."""
     try:
         vol_cmd = check_volatility(vol_path)
     except RuntimeError as e:
@@ -126,38 +122,37 @@ def imageinfo(
 
     console.print(f"[bold]Analyzing:[/bold] {dump_path}\n")
 
-    import subprocess
     try:
         result = subprocess.run(
-            [vol_cmd, "-f", str(dump_path), "imageinfo"],
+            [vol_cmd, "-f", str(dump_path), "windows.info"],
             capture_output=True, text=True, timeout=300,
         )
         console.print(result.stdout)
         if result.returncode != 0:
             console.print(f"[yellow]{result.stderr}[/yellow]")
     except subprocess.TimeoutExpired:
-        console.print("[red]imageinfo timed out (300s)[/red]")
+        console.print("[red]windows.info timed out (300s)[/red]")
         raise typer.Exit(1)
 
 
 @app.command()
 def check(
     vol_path: str = typer.Option(
-        "vol.py", "--vol-path",
-        help="Path to Volatility 2 executable.",
+        "vol", "--vol-path",
+        help="Path to Volatility 3 executable.",
     ),
     model_dir: Optional[Path] = typer.Option(
         None, "--model-dir", "-m",
         help="Override model directory.",
     ),
 ):
-    """Check that Volatility 2 and model files are available."""
+    """Check that Volatility 3 and model files are available."""
     # Check Volatility
     try:
         vol_cmd = check_volatility(vol_path)
-        console.print(f"[green]Volatility 2:[/green] {vol_cmd}")
+        console.print(f"[green]Volatility 3:[/green] {vol_cmd}")
     except RuntimeError:
-        console.print(f"[red]Volatility 2:[/red] not found at '{vol_path}'")
+        console.print(f"[red]Volatility 3:[/red] not found at '{vol_path}'")
 
     # Check models
     try:
@@ -189,7 +184,7 @@ def _display_result(result: dict, explanation: dict = None):
                 key=lambda x: x[1], reverse=True,
             ):
                 bar_len = int(prob * 30)
-                bar = "█" * bar_len + "░" * (30 - bar_len)
+                bar = "\u2588" * bar_len + "\u2591" * (30 - bar_len)
                 details += f"\n  {name:<12} {bar} {prob*100:.1f}%"
     else:
         verdict = f"[bold {color}]BENIGN[/bold {color}]"
@@ -203,7 +198,7 @@ def _display_result(result: dict, explanation: dict = None):
                                   ("stage2_top", "Subtype Classification")]:
             if stage_key not in explanation:
                 continue
-            table = Table(title=f"Top Features — {label}")
+            table = Table(title=f"Top Features \u2014 {label}")
             table.add_column("Feature", style="cyan")
             table.add_column("Importance", justify="right")
 

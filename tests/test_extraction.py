@@ -1,4 +1,4 @@
-"""Tests for extraction module — Volatility 2 output parsers."""
+"""Tests for extraction module — Volatility 3 JSON output parsers."""
 
 import numpy as np
 import pandas as pd
@@ -16,138 +16,70 @@ from src.extraction import (
     parse_pslist,
     parse_psxview,
     parse_svcscan,
+    _flatten_rows,
 )
 
 # ---------------------------------------------------------------------------
-# Fixture: sample Volatility 2 output strings
+# Fixture: sample Volatility 3 JSON rows (list of dicts)
 # ---------------------------------------------------------------------------
 
-PSLIST_OUTPUT = """\
-Volatility Foundation Volatility Framework 2.6.1
-Offset(V)          Name                    PID   PPID   Thds     Hnds   Sess  Wow64 Start                          Exit
------------------- -------------------- ------ ------ ------ -------- ------ ------ ------------------------------ -----
-0xfffffa8000ca0060 System                    4      0     84      474 ------      0 2023-01-15 10:20:30 UTC+0000
-0xfffffa8001a3b060 smss.exe                248      4      2       29 ------      0 2023-01-15 10:20:30 UTC+0000
-0xfffffa8002b1d060 csrss.exe               340    332      9      436      0      0 2023-01-15 10:20:31 UTC+0000
-0xfffffa8002c5e060 wininit.exe             388    332      3       75      0      0 2023-01-15 10:20:31 UTC+0000
-"""
+PSLIST_ROWS = [
+    {"PID": 4, "PPID": 0, "ImageFileName": "System", "Threads": 84, "Handles": 474},
+    {"PID": 248, "PPID": 4, "ImageFileName": "smss.exe", "Threads": 2, "Handles": 29},
+    {"PID": 340, "PPID": 332, "ImageFileName": "csrss.exe", "Threads": 9, "Handles": 436},
+    {"PID": 388, "PPID": 332, "ImageFileName": "wininit.exe", "Threads": 3, "Handles": 75},
+]
 
-DLLLIST_OUTPUT = """\
-Volatility Foundation Volatility Framework 2.6.1
-************************************************************************
-csrss.exe pid:    340
-Command line : %SystemRoot%\\system32\\csrss.exe ObjectDirectory=\\Windows
+DLLLIST_ROWS = [
+    {"PID": 340, "Process": "csrss.exe", "Base": "0x04a00000", "Size": "0x5000", "Name": "csrss.exe", "Path": "\\SystemRoot\\System32\\csrss.exe"},
+    {"PID": 340, "Process": "csrss.exe", "Base": "0x7c900000", "Size": "0x12000", "Name": "ntdll.dll", "Path": "\\SystemRoot\\System32\\ntdll.dll"},
+    {"PID": 388, "Process": "wininit.exe", "Base": "0x00400000", "Size": "0x3000", "Name": "wininit.exe", "Path": "\\SystemRoot\\System32\\wininit.exe"},
+    {"PID": 388, "Process": "wininit.exe", "Base": "0x7c900000", "Size": "0x12000", "Name": "ntdll.dll", "Path": "\\SystemRoot\\System32\\ntdll.dll"},
+    {"PID": 388, "Process": "wininit.exe", "Base": "0x7c800000", "Size": "0x11000", "Name": "kernel32.dll", "Path": "\\SystemRoot\\System32\\kernel32.dll"},
+]
 
-Base             Size          LoadCount LoadTime                       Path
----------- ---------- ---------- ------------------------------ ----
-0x04a00000     0x5000     0xffff                                \\SystemRoot\\System32\\csrss.exe
-0x7c900000    0x12000     0xffff                                \\SystemRoot\\System32\\ntdll.dll
+HANDLES_ROWS = [
+    {"PID": 4, "Process": "System", "Offset": "0xfffffa8000ca1010", "HandleValue": "0x4", "Type": "Directory", "GrantedAccess": "0x1f0003", "Name": "KnownDlls"},
+    {"PID": 4, "Process": "System", "Offset": "0xfffffa8000ca2020", "HandleValue": "0x8", "Type": "Key", "GrantedAccess": "0x1f0003", "Name": "MACHINE"},
+    {"PID": 4, "Process": "System", "Offset": "0xfffffa8000ca3030", "HandleValue": "0xc", "Type": "Thread", "GrantedAccess": "0x1f0001", "Name": "TID 100"},
+    {"PID": 4, "Process": "System", "Offset": "0xfffffa8000ca4040", "HandleValue": "0x10", "Type": "Mutant", "GrantedAccess": "0x1f0003", "Name": "SomeMutex"},
+    {"PID": 340, "Process": "csrss.exe", "Offset": "0xfffffa8000ca5050", "HandleValue": "0x14", "Type": "Section", "GrantedAccess": "0x1f0003", "Name": "BaseNamedObjects"},
+    {"PID": 340, "Process": "csrss.exe", "Offset": "0xfffffa8000ca6060", "HandleValue": "0x18", "Type": "Desktop", "GrantedAccess": "0x100020", "Name": "Default"},
+    {"PID": 340, "Process": "csrss.exe", "Offset": "0xfffffa8000ca7070", "HandleValue": "0x1c", "Type": "Semaphore", "GrantedAccess": "0x1f0003", "Name": "SomeSemaphore"},
+    {"PID": 340, "Process": "csrss.exe", "Offset": "0xfffffa8000ca8080", "HandleValue": "0x20", "Type": "Timer", "GrantedAccess": "0x1f0003", "Name": "SomeTimer"},
+]
 
-************************************************************************
-wininit.exe pid:    388
-Command line : wininit.exe
+LDRMODULES_ROWS = [
+    {"Pid": 340, "Process": "csrss.exe", "Base": "0x04a00000", "InLoad": True, "InInit": True, "InMem": True, "MappedPath": "\\csrss.exe"},
+    {"Pid": 340, "Process": "csrss.exe", "Base": "0x7c900000", "InLoad": True, "InInit": True, "InMem": True, "MappedPath": "\\ntdll.dll"},
+    {"Pid": 340, "Process": "csrss.exe", "Base": "0x00010000", "InLoad": False, "InInit": False, "InMem": False, "MappedPath": "\\suspicious.dll"},
+    {"Pid": 388, "Process": "wininit.exe", "Base": "0x00400000", "InLoad": True, "InInit": False, "InMem": True, "MappedPath": "\\wininit.exe"},
+]
 
-Base             Size          LoadCount LoadTime                       Path
----------- ---------- ---------- ------------------------------ ----
-0x00400000     0x3000     0xffff                                \\SystemRoot\\System32\\wininit.exe
-0x7c900000    0x12000     0xffff                                \\SystemRoot\\System32\\ntdll.dll
-0x7c800000    0x11000     0xffff                                \\SystemRoot\\System32\\kernel32.dll
-"""
+MALFIND_ROWS = [
+    {"PID": 1024, "Process": "svchost.exe", "Start VPN": "0x00400000", "End VPN": "0x00401000", "Protection": "PAGE_EXECUTE_READWRITE", "CommitCharge": 10, "Tag": "VadS"},
+    {"PID": 1024, "Process": "svchost.exe", "Start VPN": "0x00500000", "End VPN": "0x00501000", "Protection": "PAGE_EXECUTE_READWRITE", "CommitCharge": 5, "Tag": "VadS"},
+    {"PID": 2048, "Process": "explorer.exe", "Start VPN": "0x10000000", "End VPN": "0x10001000", "Protection": "PAGE_EXECUTE_READ", "CommitCharge": 20, "Tag": "VadS"},
+]
 
-HANDLES_OUTPUT = """\
-Volatility Foundation Volatility Framework 2.6.1
-Offset(V)             Pid        Handle           Access Type             Details
------------------- ------ ------------ ---------- ---------------- -------
-0xfffffa8000ca1010      4          0x4   0x1f0003 Directory        KnownDlls
-0xfffffa8000ca2020      4          0x8   0x1f0003 Key              MACHINE
-0xfffffa8000ca3030      4          0xc   0x1f0001 Thread           TID 100
-0xfffffa8000ca4040      4         0x10   0x1f0003 Mutant           SomeMutex
-0xfffffa8000ca5050    340         0x14   0x1f0003 Section          BaseNamedObjects
-0xfffffa8000ca6060    340         0x18   0x100020 Desktop          Default
-0xfffffa8000ca7070    340         0x1c   0x1f0003 Semaphore        SomeSemaphore
-0xfffffa8000ca8080    340         0x20   0x1f0003 Timer            SomeTimer
-"""
+PSXVIEW_ROWS = [
+    {"pslist": True, "thrdproc": True, "pspcid": True, "csrss": False, "session": False, "deskthrd": False, "Name": "System", "PID": 4},
+    {"pslist": True, "thrdproc": True, "pspcid": True, "csrss": False, "session": False, "deskthrd": False, "Name": "smss.exe", "PID": 248},
+    {"pslist": True, "thrdproc": True, "pspcid": True, "csrss": True, "session": True, "deskthrd": True, "Name": "csrss.exe", "PID": 340},
+    {"pslist": False, "thrdproc": False, "pspcid": True, "csrss": True, "session": True, "deskthrd": True, "Name": "svchost.exe", "PID": 1024},
+]
 
-LDRMODULES_OUTPUT = """\
-Volatility Foundation Volatility Framework 2.6.1
-Pid      Process              Base       InLoad InInit InMem  MappedPath
--------- -------------------- ---------- ------ ------ ------ ----------
-     340 csrss.exe            0x04a00000 True   True   True   \\csrss.exe
-     340 csrss.exe            0x7c900000 True   True   True   \\ntdll.dll
-     340 csrss.exe            0x00010000 False  False  False  \\suspicious.dll
-     388 wininit.exe          0x00400000 True   False  True   \\wininit.exe
-"""
+SVCSCAN_ROWS = [
+    {"Offset": "0x298c40", "Order": 143, "Name": "ACPI", "DisplayName": "Microsoft ACPI Driver", "Type": "SERVICE_KERNEL_DRIVER", "State": "SERVICE_RUNNING", "Binary": "\\SystemRoot\\system32\\drivers\\ACPI.sys"},
+    {"Offset": "0x29ab80", "Order": 12, "Name": "AudioSrv", "DisplayName": "Windows Audio", "Type": "SERVICE_WIN32_SHARE_PROCESS", "State": "SERVICE_RUNNING", "Binary": "%SystemRoot%\\System32\\svchost.exe -k netsvcs"},
+    {"Offset": "0x29cd00", "Order": 55, "Name": "Spooler", "DisplayName": "Print Spooler", "Type": "SERVICE_WIN32_OWN_PROCESS", "State": "SERVICE_STOPPED", "Binary": "%SystemRoot%\\System32\\spoolsv.exe"},
+]
 
-MALFIND_OUTPUT = """\
-Process: svchost.exe Pid: 1024 Address: 0x00400000
-Vad Tag: VadS Protection: PAGE_EXECUTE_READWRITE
-Flags: CommitCharge: 10, MemCommit: 1, PrivateMemory: 1, Protection: 6
-
-0x00400000  4d 5a 90 00 03 00 00 00 04 00 00 00 ff ff 00 00   MZ..............
-
-Process: svchost.exe Pid: 1024 Address: 0x00500000
-Vad Tag: VadS Protection: PAGE_EXECUTE_READWRITE
-Flags: CommitCharge: 5, MemCommit: 1, PrivateMemory: 1, Protection: 6
-
-0x00500000  4d 5a 90 00 03 00 00 00 04 00 00 00 ff ff 00 00   MZ..............
-
-Process: explorer.exe Pid: 2048 Address: 0x10000000
-Vad Tag: VadS Protection: PAGE_EXECUTE_READ
-Flags: CommitCharge: 20, MemCommit: 1, PrivateMemory: 1, Protection: 5
-
-0x10000000  4d 5a 90 00 03 00 00 00 04 00 00 00 ff ff 00 00   MZ..............
-"""
-
-PSXVIEW_OUTPUT = """\
-Volatility Foundation Volatility Framework 2.6.1
-Offset(P)          Name                    PID pslist psscan thrdproc pspcid csrss  session deskthrd
------------------- -------------------- ------ ------ ------ -------- ------ ------ ------- --------
-0x000000003fd02060 System                    4 True   True   True     True   False  False   False
-0x000000003e4ab060 smss.exe                248 True   True   True     True   False  False   False
-0x000000003e2d8960 csrss.exe               340 True   True   True     True   True   True    True
-0x000000003e2a5060 svchost.exe            1024 False  True   False    True   True   True    True
-"""
-
-SVCSCAN_OUTPUT = """\
-Offset: 0x298c40
-Order: 143
-Start: SERVICE_AUTO_START
-Process ID: -
-Service Name: ACPI
-Display Name: Microsoft ACPI Driver
-Service Type: SERVICE_KERNEL_DRIVER
-State           : SERVICE_RUNNING
-Binary Path: \\SystemRoot\\system32\\drivers\\ACPI.sys
-
-Offset: 0x29ab80
-Order: 12
-Start: SERVICE_AUTO_START
-Process ID: 680
-Service Name: AudioSrv
-Display Name: Windows Audio
-Service Type: SERVICE_WIN32_SHARE_PROCESS
-State           : SERVICE_RUNNING
-Binary Path: %SystemRoot%\\System32\\svchost.exe -k netsvcs
-
-Offset: 0x29cd00
-Order: 55
-Start: SERVICE_DEMAND_START
-Process ID: 1200
-Service Name: Spooler
-Display Name: Print Spooler
-Service Type: SERVICE_WIN32_OWN_PROCESS
-State           : SERVICE_STOPPED
-Binary Path: %SystemRoot%\\System32\\spoolsv.exe
-"""
-
-CALLBACKS_OUTPUT = """\
-Volatility Foundation Volatility Framework 2.6.1
-Type                                 Callback           Module               Detail
------------------------------------- ------------------ -------------------- ------
-IoRegisterShutdownNotification       0xfffff80002a12340 ACPI.sys             -
-CmRegisterCallback                   0xfffff80002b34560 CI.dll               -
-KeBugCheckCallbackListHead           0xfffff80002c56780 hal.dll              -
-"""
+CALLBACKS_ROWS = [
+    {"Type": "IoRegisterShutdownNotification", "Callback": "0xfffff80002a12340", "Module": "ACPI.sys", "Detail": "-"},
+    {"Type": "CmRegisterCallback", "Callback": "0xfffff80002b34560", "Module": "CI.dll", "Detail": "-"},
+    {"Type": "KeBugCheckCallbackListHead", "Callback": "0xfffff80002c56780", "Module": "hal.dll", "Detail": "-"},
+]
 
 
 # ---------------------------------------------------------------------------
@@ -156,31 +88,31 @@ KeBugCheckCallbackListHead           0xfffff80002c56780 hal.dll              -
 
 class TestParsePslist:
     def test_basic(self):
-        result = parse_pslist(PSLIST_OUTPUT)
+        result = parse_pslist(PSLIST_ROWS)
         assert result["pslist.nproc"] == 4
         assert result["pslist.nppid"] == 3  # PPIDs: 0, 4, 332
         assert result["pslist.avg_threads"] == pytest.approx((84 + 2 + 9 + 3) / 4)
 
     def test_empty(self):
-        result = parse_pslist("")
+        result = parse_pslist([])
         assert result["pslist.nproc"] == 0
         assert result["pslist.avg_threads"] == 0.0
 
 
 class TestParseDlllist:
     def test_basic(self):
-        result = parse_dlllist(DLLLIST_OUTPUT)
+        result = parse_dlllist(DLLLIST_ROWS)
         # csrss.exe: 2 DLLs, wininit.exe: 3 DLLs -> avg 2.5
         assert result["dlllist.avg_dlls_per_proc"] == pytest.approx(2.5)
 
     def test_empty(self):
-        result = parse_dlllist("")
+        result = parse_dlllist([])
         assert result["dlllist.avg_dlls_per_proc"] == 0.0
 
 
 class TestParseHandles:
     def test_basic(self):
-        result = parse_handles(HANDLES_OUTPUT)
+        result = parse_handles(HANDLES_ROWS)
         assert result["handles.nhandles"] == 8
         assert result["handles.ndirectory"] == 1
         assert result["handles.nkey"] == 1
@@ -194,39 +126,39 @@ class TestParseHandles:
         assert result["handles.avg_handles_per_proc"] == pytest.approx(4.0)
 
     def test_empty(self):
-        result = parse_handles("")
+        result = parse_handles([])
         assert result["handles.nhandles"] == 0
 
 
 class TestParseLdrmodules:
     def test_basic(self):
-        result = parse_ldrmodules(LDRMODULES_OUTPUT)
+        result = parse_ldrmodules(LDRMODULES_ROWS)
         assert result["ldrmodules.not_in_load"] == 1   # suspicious.dll
         assert result["ldrmodules.not_in_init"] == 2   # suspicious.dll + wininit.exe
         assert result["ldrmodules.not_in_mem"] == 1    # suspicious.dll
 
     def test_empty(self):
-        result = parse_ldrmodules("")
+        result = parse_ldrmodules([])
         assert result["ldrmodules.not_in_load"] == 0
 
 
 class TestParseMalfind:
     def test_basic(self):
-        result = parse_malfind(MALFIND_OUTPUT)
+        result = parse_malfind(MALFIND_ROWS)
         assert result["malfind.ninjections"] == 3
         assert result["malfind.commitCharge"] == 35  # 10 + 5 + 20
-        assert result["malfind.protection"] == 4     # 2 Protection: lines + 2 Protection: in Flags per unique value
+        assert result["malfind.protection"] == 2     # PAGE_EXECUTE_READWRITE, PAGE_EXECUTE_READ
         assert result["malfind.uniqueInjections"] == 3
 
     def test_empty(self):
-        result = parse_malfind("")
+        result = parse_malfind([])
         assert result["malfind.ninjections"] == 0
         assert result["malfind.commitCharge"] == 0
 
 
 class TestParsePsxview:
     def test_basic(self):
-        result = parse_psxview(PSXVIEW_OUTPUT)
+        result = parse_psxview(PSXVIEW_ROWS)
         assert result["psxview.not_in_pslist"] == 1        # svchost
         assert result["psxview.not_in_ethread_pool"] == 1  # svchost
         assert result["psxview.not_in_csrss_handles"] == 2 # System, smss
@@ -235,14 +167,14 @@ class TestParsePsxview:
         assert result["psxview.not_in_pslist_false_avg"] == pytest.approx(0.25)
 
     def test_empty(self):
-        result = parse_psxview("")
+        result = parse_psxview([])
         assert result["psxview.not_in_pslist"] == 0
         assert result["psxview.not_in_pslist_false_avg"] == 0.0
 
 
 class TestParseSvcscan:
     def test_basic(self):
-        result = parse_svcscan(SVCSCAN_OUTPUT)
+        result = parse_svcscan(SVCSCAN_ROWS)
         assert result["svcscan.nservices"] == 3
         assert result["svcscan.kernel_drivers"] == 1
         assert result["svcscan.process_services"] == 1
@@ -250,18 +182,43 @@ class TestParseSvcscan:
         assert result["svcscan.nactive"] == 2
 
     def test_empty(self):
-        result = parse_svcscan("")
+        result = parse_svcscan([])
         assert result["svcscan.nservices"] == 0
 
 
 class TestParseCallbacks:
     def test_basic(self):
-        result = parse_callbacks(CALLBACKS_OUTPUT)
+        result = parse_callbacks(CALLBACKS_ROWS)
         assert result["callbacks.ncallbacks"] == 3
 
     def test_empty(self):
-        result = parse_callbacks("")
+        result = parse_callbacks([])
         assert result["callbacks.ncallbacks"] == 0
+
+
+# ---------------------------------------------------------------------------
+# _flatten_rows tests
+# ---------------------------------------------------------------------------
+
+class TestFlattenRows:
+    def test_flat_list(self):
+        data = [{"PID": 4}, {"PID": 248}]
+        assert _flatten_rows(data) == [{"PID": 4}, {"PID": 248}]
+
+    def test_nested_children(self):
+        data = [{"PID": 4, "__children": [{"PID": 248, "__children": [{"PID": 340}]}]}]
+        result = _flatten_rows(data)
+        assert len(result) == 3
+        assert result[0]["PID"] == 4
+        assert result[1]["PID"] == 248
+        assert result[2]["PID"] == 340
+
+    def test_dict_wrapper(self):
+        data = {"data": [{"PID": 4}]}
+        assert _flatten_rows(data) == [{"PID": 4}]
+
+    def test_empty(self):
+        assert _flatten_rows([]) == []
 
 
 # ---------------------------------------------------------------------------

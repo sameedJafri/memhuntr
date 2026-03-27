@@ -1,7 +1,7 @@
-"""Run Volatility 2 plugins on a memory dump and extract features for classification."""
+"""Run Volatility 3 plugins on a memory dump and extract features for classification."""
 
+import json
 import os
-import re
 import subprocess
 from pathlib import Path
 
@@ -39,20 +39,32 @@ LOG1P_FEATURES = [
     "svcscan.kernel_drivers", "svcscan.nservices", "svcscan.shared_process_services",
 ]
 
-# Volatility 2 plugins to run
-PLUGINS = ["pslist", "dlllist", "handles", "ldrmodules", "malfind", "psxview",
-           "svcscan", "callbacks"]
+# Volatility 3 plugin names
+VOL3_PLUGINS = {
+    "pslist": "windows.pslist",
+    "dlllist": "windows.dlllist",
+    "handles": "windows.handles",
+    "ldrmodules": "windows.ldrmodules",
+    "malfind": "windows.malfind",
+    "psxview": "windows.psxview",
+    "svcscan": "windows.svcscan",
+    "callbacks": "windows.callbacks",
+}
+
+PLUGINS = list(VOL3_PLUGINS.keys())
 
 
 def check_volatility(vol_path: str = None) -> str:
-    """Verify Volatility 2 is installed and return the command path."""
-    cmd = vol_path or os.environ.get("VOLATILITY_PATH", "vol.py")
+    """Verify Volatility 3 is installed and return the command path."""
+    cmd = vol_path or os.environ.get("VOLATILITY_PATH", "vol")
     try:
         result = subprocess.run(
-            [cmd, "--info"],
+            [cmd, "-h"],
             capture_output=True, text=True, timeout=30,
         )
-        if result.returncode == 0 and "Address Spaces" in result.stdout:
+        if result.returncode == 0 and ("Volatility 3" in result.stdout
+                                        or "volatility3" in result.stdout.lower()
+                                        or "A volatility framework" in result.stdout):
             return cmd
     except FileNotFoundError:
         pass
@@ -60,30 +72,52 @@ def check_volatility(vol_path: str = None) -> str:
         pass
 
     raise RuntimeError(
-        f"Volatility 2 not found at '{cmd}'. Install it or set VOLATILITY_PATH.\n"
-        "See: https://github.com/volatilityfoundation/volatility"
+        f"Volatility 3 not found at '{cmd}'. Install it or set VOLATILITY_PATH.\n"
+        "Install with: pip install volatility3\n"
+        "See: https://github.com/volatilityfoundation/volatility3"
     )
 
 
-def run_plugin(dump_path: str, profile: str, plugin: str,
-               vol_path: str = "vol.py", timeout: int = 600) -> str:
-    """Execute a single Volatility 2 plugin and return its stdout."""
-    cmd = [vol_path, "-f", dump_path, f"--profile={profile}", plugin]
+def run_plugin(dump_path: str, plugin: str,
+               vol_path: str = "vol", timeout: int = 600) -> list:
+    """Execute a single Volatility 3 plugin and return parsed JSON rows."""
+    vol3_name = VOL3_PLUGINS[plugin]
+    cmd = [vol_path, "-f", dump_path, "-r", "json", vol3_name]
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
     if result.returncode != 0:
         raise subprocess.SubprocessError(
-            f"Plugin '{plugin}' failed (rc={result.returncode}): {result.stderr.strip()}"
+            f"Plugin '{vol3_name}' failed (rc={result.returncode}): {result.stderr.strip()}"
         )
-    return result.stdout
+    return _parse_json_output(result.stdout)
+
+
+def _parse_json_output(stdout: str) -> list:
+    """Parse Volatility 3 JSON renderer output into a flat list of row dicts."""
+    data = json.loads(stdout)
+    return _flatten_rows(data)
+
+
+def _flatten_rows(data) -> list:
+    """Flatten Vol3's potentially nested JSON output (handles __children trees)."""
+    if isinstance(data, dict):
+        data = data.get("data", [data])
+    rows = []
+    for item in data:
+        if isinstance(item, dict):
+            row = {k: v for k, v in item.items() if k != "__children"}
+            rows.append(row)
+            for child in item.get("__children", []):
+                rows.extend(_flatten_rows([child]))
+    return rows
 
 
 # ---------------------------------------------------------------------------
-# Parsers — each takes raw text output and returns a dict of feature values
+# Parsers — each takes a list of row dicts (from Vol3 JSON) and returns
+# a dict of feature values
 # ---------------------------------------------------------------------------
 
-def parse_pslist(output: str) -> dict:
-    """Parse pslist output for process counts and thread averages."""
-    rows = _parse_table_rows(output)
+def parse_pslist(rows: list) -> dict:
+    """Parse pslist JSON rows for process counts and thread averages."""
     if not rows:
         return {"pslist.nproc": 0, "pslist.nppid": 0, "pslist.avg_threads": 0.0}
 
@@ -91,47 +125,40 @@ def parse_pslist(output: str) -> dict:
     ppids = []
     threads = []
     for row in rows:
-        cols = row.split()
-        if len(cols) < 6:
-            continue
-        try:
-            pids.append(int(cols[2]))
-            ppids.append(int(cols[3]))
-            threads.append(int(cols[4]))
-        except (ValueError, IndexError):
-            continue
+        pid = row.get("PID")
+        ppid = row.get("PPID")
+        thds = row.get("Threads")
+        if pid is not None:
+            pids.append(pid)
+        if ppid is not None:
+            ppids.append(ppid)
+        if thds is not None:
+            threads.append(int(thds))
 
     return {
         "pslist.nproc": len(pids),
         "pslist.nppid": len(set(ppids)),
-        "pslist.avg_threads": np.mean(threads) if threads else 0.0,
+        "pslist.avg_threads": float(np.mean(threads)) if threads else 0.0,
     }
 
 
-def parse_dlllist(output: str) -> dict:
-    """Parse dlllist output for average DLLs per process."""
-    # dlllist output has process headers followed by DLL rows
-    # Process header: "****************** ... ********************"
-    # followed by: "ProcessName pid: NNN"
-    # then: "Base Size LoadCount Path" table rows
-    blocks = re.split(r"\*{10,}", output)
-    dll_counts = []
+def parse_dlllist(rows: list) -> dict:
+    """Parse dlllist JSON rows for average DLLs per process."""
+    if not rows:
+        return {"dlllist.avg_dlls_per_proc": 0.0}
 
-    for block in blocks:
-        lines = [l.strip() for l in block.strip().splitlines() if l.strip()]
-        # Count lines that look like DLL entries (start with 0x hex address)
-        dlls = sum(1 for l in lines if re.match(r"^0x[0-9a-fA-F]+", l))
-        if dlls > 0:
-            dll_counts.append(dlls)
+    dlls_per_proc = {}
+    for row in rows:
+        pid = row.get("PID")
+        if pid is not None:
+            dlls_per_proc[pid] = dlls_per_proc.get(pid, 0) + 1
 
-    avg = np.mean(dll_counts) if dll_counts else 0.0
+    avg = float(np.mean(list(dlls_per_proc.values()))) if dlls_per_proc else 0.0
     return {"dlllist.avg_dlls_per_proc": avg}
 
 
-def parse_handles(output: str) -> dict:
-    """Parse handles output for counts by type."""
-    rows = _parse_table_rows(output)
-
+def parse_handles(rows: list) -> dict:
+    """Parse handles JSON rows for counts by type."""
     type_counts = {
         "Desktop": 0, "Key": 0, "Thread": 0, "Directory": 0,
         "Semaphore": 0, "Timer": 0, "Section": 0, "Mutant": 0,
@@ -140,17 +167,11 @@ def parse_handles(output: str) -> dict:
     total = 0
 
     for row in rows:
-        cols = row.split()
-        if len(cols) < 5:
-            continue
-        try:
-            pid = int(cols[1])
-            handle_type = cols[4]
-        except (ValueError, IndexError):
-            continue
-
         total += 1
-        pids.add(pid)
+        pid = row.get("PID")
+        if pid is not None:
+            pids.add(pid)
+        handle_type = str(row.get("Type", ""))
         if handle_type in type_counts:
             type_counts[handle_type] += 1
 
@@ -169,31 +190,18 @@ def parse_handles(output: str) -> dict:
     }
 
 
-def parse_ldrmodules(output: str) -> dict:
-    """Parse ldrmodules output for modules not in load/init/mem lists."""
-    rows = _parse_table_rows(output)
-
+def parse_ldrmodules(rows: list) -> dict:
+    """Parse ldrmodules JSON rows for modules not in load/init/mem lists."""
     not_in_load = 0
     not_in_init = 0
     not_in_mem = 0
 
     for row in rows:
-        cols = row.split()
-        if len(cols) < 6:
-            continue
-        # Columns: Pid Process Base InLoad InInit InMem MappedPath
-        try:
-            in_load = cols[3]
-            in_init = cols[4]
-            in_mem = cols[5]
-        except IndexError:
-            continue
-
-        if in_load.lower() == "false":
+        if not row.get("InLoad", True):
             not_in_load += 1
-        if in_init.lower() == "false":
+        if not row.get("InInit", True):
             not_in_init += 1
-        if in_mem.lower() == "false":
+        if not row.get("InMem", True):
             not_in_mem += 1
 
     return {
@@ -203,13 +211,9 @@ def parse_ldrmodules(output: str) -> dict:
     }
 
 
-def parse_malfind(output: str) -> dict:
-    """Parse malfind block-based output for injection metrics."""
-    # Split on "Process:" lines to get individual injection blocks
-    blocks = re.split(r"(?=^Process:)", output, flags=re.MULTILINE)
-    blocks = [b.strip() for b in blocks if b.strip() and b.strip().startswith("Process:")]
-
-    if not blocks:
+def parse_malfind(rows: list) -> dict:
+    """Parse malfind JSON rows for injection metrics."""
+    if not rows:
         return {
             "malfind.ninjections": 0, "malfind.commitCharge": 0,
             "malfind.protection": 0, "malfind.uniqueInjections": 0,
@@ -219,43 +223,33 @@ def parse_malfind(output: str) -> dict:
     protections = set()
     unique_injections = set()
 
-    for block in blocks:
-        lines = block.splitlines()
-        first_line = lines[0]
-
-        # Extract PID
-        pid_match = re.search(r"Pid:\s*(\d+)", first_line)
-        pid = int(pid_match.group(1)) if pid_match else 0
-
-        # Extract address
-        addr_match = re.search(r"Address:\s*(0x[0-9a-fA-F]+)", first_line)
-        addr = addr_match.group(1) if addr_match else "0x0"
-
+    for row in rows:
+        pid = row.get("PID", 0)
+        addr = row.get("Start VPN", row.get("Address", 0))
         unique_injections.add((pid, addr))
 
-        # Extract commit charge from Vad Tag line or flags
-        for line in lines:
-            commit_match = re.search(r"CommitCharge:\s*(\d+)", line)
-            if commit_match:
-                total_commit += int(commit_match.group(1))
+        commit = row.get("CommitCharge", 0)
+        if commit:
+            total_commit += int(commit)
 
-            prot_match = re.search(r"Protection:\s*(\S+)", line)
-            if prot_match:
-                protections.add(prot_match.group(1))
+        prot = row.get("Protection", "")
+        if prot:
+            protections.add(str(prot))
 
     return {
-        "malfind.ninjections": len(blocks),
+        "malfind.ninjections": len(rows),
         "malfind.commitCharge": total_commit,
         "malfind.protection": len(protections),
         "malfind.uniqueInjections": len(unique_injections),
     }
 
 
-def parse_psxview(output: str) -> dict:
-    """Parse psxview output for hidden process indicators."""
-    rows = _parse_table_rows(output)
+def parse_psxview(rows: list) -> dict:
+    """Parse psxview JSON rows for hidden process indicators.
 
-    # Column mapping: psxview column name -> our feature suffix
+    Note: psxview is a community plugin in Vol3. If unavailable, features
+    default to 0 via the extract_features error handler.
+    """
     col_map = {
         "pslist": "pslist",
         "thrdproc": "ethread_pool",
@@ -268,30 +262,12 @@ def parse_psxview(output: str) -> dict:
     counts = {v: 0 for v in col_map.values()}
     total_rows = 0
 
-    # Find header to determine column positions
-    header_cols = None
     for row in rows:
-        lower = row.lower()
-        if "pslist" in lower and "pspcid" in lower:
-            header_cols = row.split()
-            continue
-        if header_cols is None:
-            continue
-
-        cols = row.split()
-        if len(cols) < len(header_cols):
-            continue
-
         total_rows += 1
-        for i, hcol in enumerate(header_cols):
-            hcol_lower = hcol.lower()
-            if hcol_lower in col_map and i < len(cols):
-                if cols[i].lower() == "false":
-                    counts[col_map[hcol_lower]] += 1
-
-    # If we couldn't parse the header, try positional parsing
-    if header_cols is None:
-        total_rows, counts = _parse_psxview_positional(rows)
+        for json_key, suffix in col_map.items():
+            val = row.get(json_key)
+            if val is not None and not val:
+                counts[suffix] += 1
 
     result = {}
     for suffix in col_map.values():
@@ -303,69 +279,17 @@ def parse_psxview(output: str) -> dict:
     return result
 
 
-def _parse_psxview_positional(rows: list) -> tuple:
-    """Fallback positional parser for psxview when header detection fails."""
-    col_names = ["pslist", "ethread_pool", "pspcid_list",
-                 "csrss_handles", "session", "deskthrd"]
-    counts = {name: 0 for name in col_names}
-    total = 0
-
-    for row in rows:
-        cols = row.split()
-        if len(cols) < 9:
-            continue
-        # Typical layout: Offset Name PID pslist psscan thrdproc pspcid csrss session deskthrd
-        try:
-            bools = cols[3:10]  # pslist through deskthrd
-            if not all(b.lower() in ("true", "false") for b in bools):
-                continue
-        except IndexError:
-            continue
-
-        total += 1
-        # Map positions: 3=pslist, 5=thrdproc, 6=pspcid, 7=csrss, 8=session, 9=deskthrd
-        mapping = [(3, "pslist"), (5, "ethread_pool"), (6, "pspcid_list"),
-                   (7, "csrss_handles"), (8, "session"), (9, "deskthrd")]
-        for idx, name in mapping:
-            if idx < len(cols) and cols[idx].lower() == "false":
-                counts[name] += 1
-
-    return total, counts
-
-
-def parse_svcscan(output: str) -> dict:
-    """Parse svcscan block-based output for service counts."""
-    # svcscan outputs blocks separated by blank lines
-    blocks = re.split(r"\n\s*\n", output)
-
-    nservices = 0
+def parse_svcscan(rows: list) -> dict:
+    """Parse svcscan JSON rows for service counts."""
+    nservices = len(rows)
     kernel_drivers = 0
     process_services = 0
     shared_process_services = 0
     nactive = 0
 
-    for block in blocks:
-        if not block.strip():
-            continue
-
-        lines = block.strip().splitlines()
-        is_service = False
-        svc_type = ""
-        state = ""
-
-        for line in lines:
-            line = line.strip()
-            if line.startswith("Service Name:"):
-                is_service = True
-            elif line.startswith("Service Type:"):
-                svc_type = line.split(":", 1)[1].strip()
-            elif line.startswith("State"):
-                state = line.split(":", 1)[1].strip() if ":" in line else ""
-
-        if not is_service:
-            continue
-
-        nservices += 1
+    for row in rows:
+        svc_type = str(row.get("Type", row.get("ServiceType", "")))
+        state = str(row.get("State", ""))
 
         if "SERVICE_KERNEL_DRIVER" in svc_type:
             kernel_drivers += 1
@@ -385,32 +309,9 @@ def parse_svcscan(output: str) -> dict:
     }
 
 
-def parse_callbacks(output: str) -> dict:
-    """Parse callbacks output for callback count."""
-    rows = _parse_table_rows(output)
+def parse_callbacks(rows: list) -> dict:
+    """Parse callbacks JSON rows for callback count."""
     return {"callbacks.ncallbacks": len(rows)}
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-def _parse_table_rows(output: str) -> list:
-    """Extract data rows from a Volatility table output (skip headers/separators)."""
-    lines = output.strip().splitlines()
-    rows = []
-    past_header = False
-
-    for line in lines:
-        stripped = line.strip()
-        # Header separator is a line of dashes
-        if re.match(r"^[-\s]+$", stripped) and len(stripped) > 5:
-            past_header = True
-            continue
-        if past_header and stripped:
-            rows.append(stripped)
-
-    return rows
 
 
 # Plugin name -> parser function
@@ -435,14 +336,13 @@ def apply_log1p(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def extract_features(dump_path: str, profile: str, vol_path: str = "vol.py",
+def extract_features(dump_path: str, vol_path: str = "vol",
                      timeout: int = 600, on_progress=None) -> pd.DataFrame:
-    """Run all Volatility plugins and return a single-row DataFrame of 39 features.
+    """Run all Volatility 3 plugins and return a single-row DataFrame of 39 features.
 
     Args:
         dump_path: Path to the memory dump file.
-        profile: Volatility 2 profile string (e.g. 'Win7SP1x64').
-        vol_path: Path to the Volatility 2 executable.
+        vol_path: Path to the Volatility 3 executable.
         timeout: Max seconds per plugin.
         on_progress: Optional callback(plugin_name, status) for progress reporting.
 
@@ -460,8 +360,8 @@ def extract_features(dump_path: str, profile: str, vol_path: str = "vol.py",
             on_progress(plugin, "running")
 
         try:
-            output = run_plugin(dump_path, profile, plugin, vol_path, timeout)
-            parsed = PARSERS[plugin](output)
+            rows = run_plugin(dump_path, plugin, vol_path, timeout)
+            parsed = PARSERS[plugin](rows)
             features.update(parsed)
 
             if on_progress:

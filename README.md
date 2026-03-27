@@ -1,22 +1,22 @@
 # memhuntr
 
-A memory forensics malware classifier that uses Volatility 2 plugin outputs and a two-stage XGBoost pipeline to classify Windows memory dumps as **Benign** or **Malware** (Ransomware, Spyware, or Trojan).
+A memory forensics malware classifier that uses Volatility 3 plugin outputs and a two-stage XGBoost pipeline to classify Windows memory dumps as **Benign** or **Malware** (Ransomware, Spyware, or Trojan).
 
 ## How It Works
 
-memhuntr extracts 39 behavioral features from a memory dump by running 8 Volatility 2 plugins (`pslist`, `dlllist`, `handles`, `ldrmodules`, `malfind`, `psxview`, `svcscan`, `callbacks`), then feeds them through a two-stage classifier:
+memhuntr extracts 39 behavioral features from a memory dump by running 8 Volatility 3 plugins (`windows.pslist`, `windows.dlllist`, `windows.handles`, `windows.ldrmodules`, `windows.malfind`, `windows.psxview`, `windows.svcscan`, `windows.callbacks`), then feeds them through a two-stage classifier:
 
 1. **Stage 1** — Binary classification (Benign vs Malware)
 2. **Stage 2** — Malware subtype classification (Ransomware / Spyware / Trojan)
 
-Both stages use XGBoost models trained on the [CIC-MalMem-2022](https://www.unb.ca/cic/datasets/malmem-2022.html) dataset with a temporal train/test split.
+Both stages use XGBoost models trained on the [MalMem-2024](https://www.sciencedirect.com/science/article/pii/S0167404824001652) dataset with a temporal train/test split.
 
 ## Project Structure
 
 ```
 memhuntr/
 ├── src/
-│   ├── cli.py            # Typer CLI (scan, imageinfo, check)
+│   ├── cli.py            # Typer CLI (scan, info, check)
 │   ├── extraction.py     # Volatility plugin runners and output parsers
 │   └── inference.py      # Model loading, prediction, and explanation
 ├── tests/
@@ -38,7 +38,7 @@ memhuntr/
 ## Prerequisites
 
 - **Python 3.10+**
-- **Volatility 2** — install from [volatilityfoundation/volatility](https://github.com/volatilityfoundation/volatility) and ensure `vol.py` is on your PATH (or pass `--vol-path`)
+- **Volatility 3** — install with `pip install volatility3` or from [volatilityfoundation/volatility3](https://github.com/volatilityfoundation/volatility3). Ensure `vol` is on your PATH (or pass `--vol-path`)
 - A Windows memory dump (`.raw`, `.vmem`, etc.)
 
 ## Installation
@@ -58,39 +58,38 @@ pip install -r requirements.txt
 
 ### Check setup
 
-Verify that Volatility 2 and model files are available:
+Verify that Volatility 3 and model files are available:
 
 ```bash
 python -m src.cli check
 ```
 
-### Detect OS profile
+### Detect OS info
 
-If you don't know the Volatility profile for your memory dump:
+Get OS information for a memory dump (Volatility 3 auto-detects the profile):
 
 ```bash
-python -m src.cli imageinfo /path/to/dump.raw
+python -m src.cli info /path/to/dump.raw
 ```
 
 ### Scan a memory dump
 
 ```bash
-python -m src.cli scan /path/to/dump.raw --profile Win7SP1x64
+python -m src.cli scan /path/to/dump.raw
 ```
 
 With JSON output and feature explanations:
 
 ```bash
-python -m src.cli scan /path/to/dump.raw -p Win7SP1x64 --output json --explain
+python -m src.cli scan /path/to/dump.raw --output json --explain
 ```
 
 ### CLI Options
 
 | Option | Description |
 |---|---|
-| `--profile`, `-p` | Volatility 2 profile (required for `scan`) |
 | `--model-dir`, `-m` | Override model directory |
-| `--vol-path` | Path to `vol.py` (default: `vol.py`) |
+| `--vol-path` | Path to `vol` executable (default: `vol`) |
 | `--output`, `-o` | Output format: `table` or `json` |
 | `--explain`, `-e` | Show top features driving the prediction |
 | `--timeout`, `-t` | Max seconds per Volatility plugin (default: 600) |
