@@ -17,7 +17,7 @@ from .inference import explain_prediction, load_pipeline, predict
 app = typer.Typer(
     name="memhuntr",
     help="Classify memory dumps as Benign or Malware (Ransomware/Spyware/Trojan) "
-         "using Volatility 3 features and a two-stage XGBoost pipeline.",
+    "using Volatility 3 features and a two-stage XGBoost pipeline.",
     no_args_is_help=True,
 )
 console = Console()
@@ -26,27 +26,38 @@ console = Console()
 @app.command()
 def scan(
     dump_path: Path = typer.Argument(
-        ..., help="Path to the memory dump file (.raw, .vmem, etc.)",
-        exists=True, readable=True,
+        ...,
+        help="Path to the memory dump file (.raw, .vmem, etc.)",
+        exists=True,
+        readable=True,
     ),
     model_dir: Optional[Path] = typer.Option(
-        None, "--model-dir", "-m",
+        None,
+        "--model-dir",
+        "-m",
         help="Override model directory (default: bundled temporal models).",
     ),
     vol_path: str = typer.Option(
-        "vol", "--vol-path",
+        "vol",
+        "--vol-path",
         help="Path to Volatility 3 executable.",
     ),
     output_format: str = typer.Option(
-        "table", "--output", "-o",
+        "table",
+        "--output",
+        "-o",
         help="Output format: 'table' (rich) or 'json'.",
     ),
     explain: bool = typer.Option(
-        False, "--explain", "-e",
+        False,
+        "--explain",
+        "-e",
         help="Show top features driving the prediction.",
     ),
     timeout: int = typer.Option(
-        600, "--timeout", "-t",
+        600,
+        "--timeout",
+        "-t",
         help="Max seconds per Volatility plugin.",
     ),
 ):
@@ -66,7 +77,7 @@ def scan(
         raise typer.Exit(1)
 
     # Extract features
-    console.print(f"\n[bold]Scanning:[/bold] {dump_path}\n")
+    console.print(f"\n[bold]Scanning:[/bold] {dump_path.name}\n")
 
     def on_progress(plugin, status):
         if status == "running":
@@ -77,9 +88,7 @@ def scan(
             console.print(f" [yellow]{status}[/yellow]")
 
     try:
-        features_df = extract_features(
-            str(dump_path), vol_cmd, timeout, on_progress
-        )
+        features_df = extract_features(str(dump_path), vol_cmd, timeout, on_progress)
     except Exception as e:
         console.print(f"\n[red]Feature extraction failed: {e}[/red]")
         raise typer.Exit(1)
@@ -105,11 +114,14 @@ def scan(
 @app.command()
 def info(
     dump_path: Path = typer.Argument(
-        ..., help="Path to the memory dump file.",
-        exists=True, readable=True,
+        ...,
+        help="Path to the memory dump file.",
+        exists=True,
+        readable=True,
     ),
     vol_path: str = typer.Option(
-        "vol", "--vol-path",
+        "vol",
+        "--vol-path",
         help="Path to Volatility 3 executable.",
     ),
 ):
@@ -120,12 +132,14 @@ def info(
         console.print(f"[red]{e}[/red]")
         raise typer.Exit(1)
 
-    console.print(f"[bold]Analyzing:[/bold] {dump_path}\n")
+    console.print(f"[bold]Analyzing:[/bold] {dump_path.name}\n")
 
     try:
         result = subprocess.run(
             [vol_cmd, "-f", str(dump_path), "windows.info"],
-            capture_output=True, text=True, timeout=300,
+            capture_output=True,
+            text=True,
+            timeout=300,
         )
         console.print(result.stdout)
         if result.returncode != 0:
@@ -138,11 +152,14 @@ def info(
 @app.command()
 def check(
     vol_path: str = typer.Option(
-        "vol", "--vol-path",
+        "vol",
+        "--vol-path",
         help="Path to Volatility 3 executable.",
     ),
     model_dir: Optional[Path] = typer.Option(
-        None, "--model-dir", "-m",
+        None,
+        "--model-dir",
+        "-m",
         help="Override model directory.",
     ),
 ):
@@ -164,6 +181,13 @@ def check(
 
 def _display_result(result: dict, explanation: dict = None):
     """Display prediction result as a rich panel."""
+    # Warning disclaimer
+    console.print(
+        "\n[yellow]⚠️  Warning: This classifier is not 100% accurate. "
+        "Results may contain false positives/negatives. "
+        "Use as a triage tool only, not for final determination.[/yellow]\n"
+    )
+
     is_malware = result["label"] == "Malware"
     color = "red" if is_malware else "green"
     confidence_pct = f"{result['confidence'] * 100:.1f}%"
@@ -181,7 +205,8 @@ def _display_result(result: dict, explanation: dict = None):
             details += "\n\nSubtype probabilities:"
             for name, prob in sorted(
                 result["subtype_probabilities"].items(),
-                key=lambda x: x[1], reverse=True,
+                key=lambda x: x[1],
+                reverse=True,
             ):
                 bar_len = int(prob * 30)
                 bar = "\u2588" * bar_len + "\u2591" * (30 - bar_len)
@@ -190,12 +215,16 @@ def _display_result(result: dict, explanation: dict = None):
         verdict = f"[bold {color}]BENIGN[/bold {color}]"
         details = f"Confidence: {confidence_pct}"
 
-    console.print(Panel(f"{verdict}\n\n{details}", title="memhuntr", border_style=color))
+    console.print(
+        Panel(f"{verdict}\n\n{details}", title="memhuntr", border_style=color)
+    )
 
     # Explanation table
     if explanation:
-        for stage_key, label in [("stage1_top", "Binary (Benign vs Malware)"),
-                                  ("stage2_top", "Subtype Classification")]:
+        for stage_key, label in [
+            ("stage1_top", "Binary (Benign vs Malware)"),
+            ("stage2_top", "Subtype Classification"),
+        ]:
             if stage_key not in explanation:
                 continue
             table = Table(title=f"Top Features \u2014 {label}")
@@ -203,7 +232,7 @@ def _display_result(result: dict, explanation: dict = None):
             table.add_column("Importance", justify="right")
 
             for feat, imp in explanation[stage_key].items():
-                table.add_row(feat, f"{imp:.4f}")
+                table.add_row(feat, f"{imp*100:.1f}%")
 
             console.print(table)
 
