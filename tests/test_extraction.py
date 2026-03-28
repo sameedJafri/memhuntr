@@ -178,7 +178,6 @@ class TestParseSvcscan:
         assert result["svcscan.nservices"] == 3
         assert result["svcscan.kernel_drivers"] == 1
         assert result["svcscan.process_services"] == 1
-        assert result["svcscan.shared_process_services"] == 1
         assert result["svcscan.nactive"] == 2
 
     def test_empty(self):
@@ -266,7 +265,7 @@ class TestApplyLog1p:
 
 class TestFeatureConstants:
     def test_feature_count(self):
-        assert len(FEATURE_ORDER) == 39
+        assert len(FEATURE_ORDER) == 38
 
     def test_log1p_features_subset_of_feature_order(self):
         assert set(LOG1P_FEATURES).issubset(set(FEATURE_ORDER))

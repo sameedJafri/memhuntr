@@ -26,7 +26,7 @@ FEATURE_ORDER = [
     "psxview.not_in_pspcid_list_false_avg", "psxview.not_in_csrss_handles_false_avg",
     "psxview.not_in_session_false_avg", "psxview.not_in_deskthrd_false_avg",
     "svcscan.nservices", "svcscan.kernel_drivers", "svcscan.process_services",
-    "svcscan.shared_process_services", "svcscan.nactive",
+    "svcscan.nactive",
     "callbacks.ncallbacks",
 ]
 
@@ -36,7 +36,7 @@ LOG1P_FEATURES = [
     "malfind.commitCharge", "malfind.ninjections", "malfind.protection",
     "psxview.not_in_csrss_handles", "psxview.not_in_deskthrd",
     "psxview.not_in_ethread_pool",
-    "svcscan.kernel_drivers", "svcscan.nservices", "svcscan.shared_process_services",
+    "svcscan.kernel_drivers", "svcscan.nservices",
 ]
 
 # Volatility 3 plugin names
@@ -284,7 +284,6 @@ def parse_svcscan(rows: list) -> dict:
     nservices = len(rows)
     kernel_drivers = 0
     process_services = 0
-    shared_process_services = 0
     nactive = 0
 
     for row in rows:
@@ -295,8 +294,6 @@ def parse_svcscan(rows: list) -> dict:
             kernel_drivers += 1
         if "SERVICE_WIN32_OWN_PROCESS" in svc_type:
             process_services += 1
-        if "SERVICE_WIN32_SHARE_PROCESS" in svc_type:
-            shared_process_services += 1
         if "SERVICE_RUNNING" in state:
             nactive += 1
 
@@ -304,7 +301,6 @@ def parse_svcscan(rows: list) -> dict:
         "svcscan.nservices": nservices,
         "svcscan.kernel_drivers": kernel_drivers,
         "svcscan.process_services": process_services,
-        "svcscan.shared_process_services": shared_process_services,
         "svcscan.nactive": nactive,
     }
 
@@ -338,7 +334,7 @@ def apply_log1p(df: pd.DataFrame) -> pd.DataFrame:
 
 def extract_features(dump_path: str, vol_path: str = "vol",
                      timeout: int = 600, on_progress=None) -> pd.DataFrame:
-    """Run all Volatility 3 plugins and return a single-row DataFrame of 39 features.
+    """Run all Volatility 3 plugins and return a single-row DataFrame of 38 features.
 
     Args:
         dump_path: Path to the memory dump file.
